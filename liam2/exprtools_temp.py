@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+
+
 from __future__ import division, print_function
 
 import ast
@@ -335,6 +338,8 @@ def _parse(s, interactive=False):
             else:
                 to_compile = [('exec', tree)]
     else:
+        print("body: {}".format(body))
+        print("body[0]: {}".format(body[0]))
         assert len(body) == 1 and isinstance(body[0], ast.Expr)
         to_compile = [('eval', ast.Expression(body[0].value))]
 

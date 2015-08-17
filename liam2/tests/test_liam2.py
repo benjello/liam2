@@ -11,16 +11,16 @@ from liam2.simulation import Simulation
 
 
 def run_simulation(yaml_file, input_dir, output_dir):
-    # try:
+    try:
         simulation = Simulation.from_yaml(
             yaml_file,
             input_dir = input_dir,
             output_dir = output_dir,
             )
         simulation.run(False)
-    # except Exception:
-    #     print('{} failed'.format(yaml_file))
-    #     raise
+    except Exception as e:
+        print('{} failed'.format(yaml_file))
+        raise(e)
 
 
 def test_liam2_examples_files():

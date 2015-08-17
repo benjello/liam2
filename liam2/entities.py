@@ -1,6 +1,9 @@
+# encoding: utf-8
 from __future__ import print_function
 
 import collections
+import sys
+import warnings
 
 #import bcolz
 import numpy as np
@@ -9,11 +12,13 @@ import tables
 import config
 from data import merge_arrays, get_fields, ColumnArray, index_table
 from expr import (Variable, VariableMethodHybrid, GlobalVariable, GlobalTable,
-                  GlobalArray, expr_eval, get_missing_value, Expr, MethodSymbol, missing_values)
+                  GlobalArray, Expr, MethodSymbol,
+                  expr_eval, get_missing_value, missing_values)
 from exprtools import parse
-from process import Assignment, Process, ProcessGroup, While, Function
-from utils import (safe_put, count_occurrences, field_str_to_type, size2str,
-                   WarnOverrideDict)
+from process import Assignment, ProcessGroup, While, Function, Return
+from utils import (count_occurrences, field_str_to_type, size2str,
+                   WarnOverrideDict, split_signature, argspec,
+                   UserDeprecationWarning)
 
 
 max_vars = 0
@@ -30,7 +35,7 @@ max_vars = 0
 #    return a[:]
 
 def global_symbols(globals_def):
-    #FIXME: these should be computed once somewhere else, not for each
+    # FIXME: these should be computed once somewhere else, not for each
     # entity. I guess they should have a class of their own
     symbols = {}
     for name, global_def in globals_def.iteritems():
@@ -66,14 +71,48 @@ class DiskBackedArray(object):
         return getattr(self.arr, item)
 
 
+class Field(object):
+    def __init__(self, name, dtype, default_value=None, input=True, output=True):
+        self.name = name
+        self.dtype = dtype
+        self.default_value = default_value
+        self.input = input
+        self.output = output
+
+
+class FieldCollection(list):
+    def __init__(self, iterable=None):
+        list.__init__(self, iterable)
+
+    @property
+    def in_input(self):
+        return FieldCollection(f for f in self if f.input)
+
+    @property
+    def in_output(self):
+        return FieldCollection(f for f in self if f.output)
+
+    @property
+    def names(self):
+        for f in self:
+            yield f.name
+
+    @property
+    def name_types(self):
+        return [(f.name, f.dtype) for f in self]
+
+    @property
+    def dtype(self):
+        return np.dtype(list(self.name_types))
+
+
 class Entity(object):
     """
     fields is a list of tuple (name, type)
     """
-    def __init__(self, name, fields=None, missing_fields=None, default_values={}, links=None,
 
-                 macro_strings=None, process_strings=None,
-                 array=None):
+    def __init__(self, name, fields=None, links=None, macro_strings=None,
+                 process_strings=None, array=None):
         self.name = name
 
         # we should have exactly one of either array or fields defined
@@ -87,34 +126,23 @@ class Entity(object):
         else:
             array_period = None
 
-        duplicate_names = [
-            name_ for name_, num in count_occurrences(fname for fname, _ in fields) if num > 1
-            ]
+        if not isinstance(fields, FieldCollection):
+            fields = FieldCollection(fields)
+
+        duplicate_names = [name
+                           for name, num
+                           in count_occurrences(fields.names)
+                           if num > 1]
         if duplicate_names:
             raise Exception("duplicate fields in entity '%s': %s"
                             % (self.name, ', '.join(duplicate_names)))
-        fnames = [name_ for name_, _ in fields]
+
+        fnames = set(fields.names)
         if 'id' not in fnames:
-            fields.insert(0, ('id', int))
+            fields.insert(0, Field('id', int))
         if 'period' not in fnames:
-            fields.insert(0, ('period', int))
+            fields.insert(0, Field('period', int))
         self.fields = fields
-
-        # only used in data (to check that all "required" fields are present
-        # in the input file)
-
-        # one potential solution would be to split the fields argument and
-        # attribute in input_fields and output_fields (regardless of whether
-        # it is split in the simulation/yaml file).
-
-        # however that might be just a temporary solution as we will soon need
-        # more arguments to fields (default values, ranges, etc...)
-
-        # another solution is to use a Field class
-        # seems like the better long term solution
-        self.missing_fields = missing_fields
-        self.default_values = default_values
-        self.stored_fields = set(name for name, _ in fields)
         self.links = links
 
         if macro_strings is None:
@@ -132,11 +160,11 @@ class Entity(object):
         self.indexed_output_table = None
 
         self.input_rows = {}
-        #TODO: it is unnecessary to keep periods which have already been
+        # TODO: it is unnecessary to keep periods which have already been
         # simulated, because (currently) when we go back in time, we always go
         # back using the output table... but periods before the start_period
         # are only present in input_index
-        #FIXME: the proper way to fix this is to copy the input_index into
+        # FIXME: the proper way to fix this is to copy the input_index into
         # the output_index during H5Date.run() and not keep input_index
         # beyond that point.
         self.input_index = {}
@@ -173,43 +201,37 @@ class Entity(object):
 
         # YAML "ordered dict" syntax returns a list of dict and we want a list
         # of tuples
-        #FIXME: if "fields" key is present but no field is defined,
+        # FIXME: if "fields" key is present but no field is defined,
         #entity_def.get('fields', []) returns None and this breaks
         fields_def = [d.items()[0] for d in entity_def.get('fields', [])]
 
-        fields = []
-        missing_fields = []
-        default_values = {}
-        for name, fielddef in fields_def:
+        def fdef2field(name, fielddef):
             if isinstance(fielddef, dict):
                 strtype = fielddef['type']
-                if not fielddef.get('initialdata', True):
-                    missing_fields.append(name)
-
-                fieldtype = field_str_to_type(strtype, "field '%s'" % name)
-                dflt_type = missing_values[fieldtype]
-                default = fielddef.get('default', dflt_type)
-                if fieldtype != type(default):
+                input = fielddef.get('initialdata', True)
+                output = fielddef.get('output', True)
+                dtype = field_str_to_type(strtype, "field '%s'" % name)
+                default = fielddef.get('default', None)
+                if (dtype != type(default)) and default is not None: # TODO FIXME BEFORE COMMIT !!!
                     raise Exception("The default value given to %s is %s"
                     " but %s was expected" %(name, type(default), strtype) )
 
             else:
                 strtype = fielddef
-                fieldtype = field_str_to_type(strtype, "field '%s'" % name)
-                default = missing_values[fieldtype]
+                input = True
+                output = True
+                dtype = field_str_to_type(strtype, "field '%s'" % name)
+                default = None
+            return Field(name, dtype, input, output)
 
-            fields.append((name, fieldtype))
-            default_values[name] = default
-
-
+        fields = [fdef2field(name, fdef) for name, fdef in fields_def]
         link_defs = entity_def.get('links', {})
         str2class = {'one2many': One2Many, 'many2one': Many2One, 'one2one': One2One}
         links = dict((name,
                       str2class[l['type']](name, l['field'], l['target']))
                      for name, l in link_defs.iteritems())
 
-        #TODO: add option for on_align_overflow
-        return Entity(ent_name, fields, missing_fields, default_values, links,
+        return Entity(ent_name, fields, links,
                       entity_def.get('macros', {}),
                       entity_def.get('processes', {}))
 
@@ -225,12 +247,12 @@ class Entity(object):
 
     @classmethod
     def from_table(cls, table):
-        return Entity(table.name, get_fields(table), missing_fields=[], default_values={},
+        return Entity(table.name, get_fields(table), missing_fields=[],
                       links={}, macro_strings={}, process_strings={})
 
     @staticmethod
     def collect_predictors(items):
-        # this excludes lists (procedures) and dict (while, ...)
+        # this excludes lists (functions) and dict (while, ...)
         return [k for k, v in items
                 if k is not None and isinstance(v, (basestring, int, float))]
 
@@ -249,19 +271,20 @@ class Entity(object):
             # globally
             all_predictors = set(self.collect_predictors(processes))
 
-            stored_fields = self.stored_fields
+            field_names = set(self.fields.names)
 
-            # non-callable fields (no variable-procedure for them)
+            # normal fields (non-callable/no hybrid variable-function for them)
             variables = dict((name, Variable(self, name, type_))
-                             for name, type_ in self.fields
-                             if name in stored_fields - process_names)
-            # callable fields
+                             for name, type_ in self.fields.name_types
+                             if name in field_names - process_names)
+
+            # callable fields (fields with a process of the same name)
             variables.update((name, VariableMethodHybrid(self, name, type_))
-                             for name, type_ in self.fields
-                             if name in stored_fields & process_names)
-            # global temporaries (they are all callable)
+                             for name, type_ in self.fields.name_types
+                             if name in field_names & process_names)
+            # global temporaries (they are all callable).
             variables.update((name, VariableMethodHybrid(self, name))
-                             for name in all_predictors - stored_fields)
+                             for name in all_predictors - field_names)
             variables.update(self.links)
             self._variables = variables
         return self._variables
@@ -275,15 +298,17 @@ class Entity(object):
     @property
     def methods(self):
         if self._methods is None:
-            if self.process_strings is None:
-                self._methods = []
-            else:
-                # variable-method hybrids are handled by the self.variable
-                # property
-                self._methods = \
-                    [(k, MethodSymbol(k, self))
-                     for k, v in self.process_strings.iteritems()
-                     if self.ismethod(v) and k not in self.stored_fields]
+            pstrings = self.process_strings
+            items = pstrings.iteritems() if pstrings is not None else ()
+            # variable-method hybrids are handled by the self.variable property
+            stored_fields = set(self.fields.in_output.names)
+            methodnames = [k for k, v in items
+                           if self.ismethod(v) and k not in stored_fields]
+            # factorial(n) -> factorial
+            methodnames = [split_signature(name)[0] if '(' in name else name
+                           for name in methodnames]
+            self._methods = [(name, MethodSymbol(name, self))
+                             for name in methodnames]
         return self._methods
 
     def all_symbols(self, global_context):
@@ -332,44 +357,130 @@ class Entity(object):
         sub_processes = self.parse_expressions(group_expressions, group_context)
         return ProcessGroup(k, self, sub_processes, purge)
 
-    def parse_expressions(self, items, context):
+    # Once we can make it an error for non-function processes/statements,
+    # we should probably split this method into parse_functions and
+    # parse_function_body.
+    def parse_expressions(self, items, context, functions_only=False):
         """
         items -- a list of tuples (name, process_string)
         context -- parsing context
                    a dict of all symbols available for all entities
+        functions_only -- whether non-functions processes are allowed
         """
         processes = []
         for k, v in items:
             if k == 'while':
-                if not isinstance(v, dict):
+                if isinstance(v, dict):
+                    raise SyntaxError("""
+This syntax for while is not supported anymore:
+  - while:
+      cond: {cond_expr}
+      code:
+          - ...
+Please use this instead:
+  - while {cond_expr}:
+      - ...
+""".format(cond_expr=v['cond']))
+                else:
                     raise ValueError("while is a reserved keyword")
-                cond = parse(v['cond'], context)
+            elif k is not None and k.startswith('while '):
+                if not isinstance(v, list):
+                    raise SyntaxError("while is a reserved keyword")
+                cond = parse(k[6:].strip(), context)
                 assert isinstance(cond, Expr)
-                code = self.parse_process_group("while:code", v['code'],
-                                                context, purge=False)
+                code = self.parse_process_group("while_code", v, context,
+                                                purge=False)
                 process = While(k, self, cond, code)
+            elif k == 'return':
+                e = SyntaxError("return is a reserved keyword. To return "
+                                "from a function, use 'return expr' "
+                                "instead of 'return: expr'")
+                e.liam2context = "while parsing: return: {}".format(v)
+                raise e
+            elif k is None and v.startswith('return'):
+                assert len(v) == 6 or v[6] == ' '
+                if len(v) > 6:
+                    result_def = v[7:].strip()
+                else:
+                    result_def = None
+                result_expr = parse(result_def, context)
+                process = Return(None, self, result_expr)
             else:
                 process = self.parse_expr(k, v, context)
+                if process is not None and functions_only:
+                    if k in self.fields.names:
+                        msg = """defining a process outside of a function is
+deprecated because it is ambiguous. You should:
+ * wrap the '{name}: {expr}' assignment inside a function like this:
+        compute_{name}:  # you can name it any way you like but simply \
+'{name}' is not recommended !
+            - {name}: {expr}
+ * update the simulation.processes list to use 'compute_{name}' (the function \
+name) instead of '{name}'.
+"""
+                    else:
+                        msg = """defining a process outside of a function is \
+deprecated because it is ambiguous.
+1) If '{name}: {expr}' is an assignment ('{name}' stores the result of \
+'{expr}'), you should:
+ * wrap the assignment inside a function, for example, like this:
+        compute_{name}:  # you can name it any way you like but simply \
+'{name}' is not recommended !
+            - {name}: {expr}
+ * update the simulation.processes list to use 'compute_{name}' (the function \
+name) instead of '{name}'.
+ * add '{name}' in the entities fields with 'output: False'
+2) otherwise if '{expr}' is an expression which does not return any value, you \
+can simply transform it into a function, like this:
+        {name}:
+            - {expr}
+"""
+                    warnings.warn(msg.format(name=k, expr=v),
+                                  UserDeprecationWarning)
                 if process is None:
                     if self.ismethod(v):
-                        if isinstance(v, list):
-                            # v should be a list of dicts (assignments) or
-                            # strings (actions)
-                            argnames, code_def, result_def = [], v, None
+                        if isinstance(v, dict):
+                            args = v.get('args', '')
+                            code = v.get('code', '')
+                            result = v.get('return', '')
+                            oldargs = "\n      args: {}".format(args) \
+                                if args else ''
+                            oldcode = "\n      code:\n          - ..." \
+                                if code else ''
+                            newcode = "\n      - ..." if code else ''
+                            oldresult = "\n      return: " + result \
+                                if result else ''
+                            newresult = "\n      - return " + result \
+                                if result else ''
+                            template = """
+This syntax for defining functions with arguments or a return value is not
+supported anymore:
+  {funcname}:{oldargs}{oldcode}{oldresult}
+
+Please use this instead:
+  {funcname}({newargs}):{newcode}{newresult}"""
+                            msg = template.format(funcname=k, oldargs=oldargs,
+                                                  oldcode=oldcode,
+                                                  oldresult=oldresult,
+                                                  newargs=args, newcode=newcode,
+                                                  newresult=newresult)
+                            raise SyntaxError(msg)
+
+                        assert isinstance(v, list)
+                        # v should be a list of dicts (assignments) or
+                        # strings (actions)
+                        if "(" in k:
+                            k, args = split_signature(k)
+                            argnames = argspec(args).args
+                            code_def, result_def = v, None
                         else:
-                            assert isinstance(v, dict)
-                            args_def = v.get('args', '')
-                            argnames = [a.strip()
-                                        for a in args_def.split(',')
-                                        if a != '']
-                            code_def = v.get('code', [])
-                            result_def = v.get('return')
+                            argnames, code_def, result_def = [], v, None
                         method_context = self.get_group_context(context,
                                                                 argnames)
-                        code = self.parse_process_group("func:code", code_def,
+                        code = self.parse_process_group(k + "_code", code_def,
                                                         method_context,
                                                         purge=False)
-                        #TODO: use code.predictors instead (but it currently
+                        # TODO: use code.predictors instead (but it currently
                         # fails for some reason) or at least factor this out
                         # with the code in parse_process_group
                         group_expressions = [elem.items()[0]
@@ -380,15 +491,16 @@ class Entity(object):
                             self.collect_predictors(group_expressions)
                         method_context = self.get_group_context(
                             method_context, group_predictors)
-                        result = parse(result_def, method_context)
-                        assert result is None or isinstance(result, Expr)
-                        process = Function(k, self, argnames, code, result)
+                        result_expr = parse(result_def, method_context)
+                        assert result_expr is None or \
+                               isinstance(result_expr, Expr)
+                        process = Function(k, self, argnames, code, result_expr)
                     elif isinstance(v, dict) and 'predictor' in v:
                         raise ValueError("Using the 'predictor' keyword is "
                                          "not supported anymore. "
                                          "If you need several processes to "
                                          "write to the same variable, you "
-                                         "should rather use procedures.")
+                                         "should rather use functions.")
                     else:
                         raise Exception("unknown expression type for %s: %s"
                                         % (k, type(v)))
@@ -397,7 +509,7 @@ class Entity(object):
 
     def parse_processes(self, context):
         processes = self.parse_expressions(self.process_strings.iteritems(),
-                                           context)
+                                           context, functions_only=True)
         self.processes = dict(processes)
         # self.ssa()
 
@@ -406,7 +518,7 @@ class Entity(object):
     #         for expr in p.expressions():
     #             for node in expr.all_of(MethodCallToResolve):
     #                 # replace node in the parent node by the "resolved" node
-    #                 #TODO: mimic ast.NodeTransformer
+    #                 # TODO: mimic ast.NodeTransformer
     #                 node.resolve()
 
     def ssa(self):
@@ -427,9 +539,9 @@ class Entity(object):
                         if not isinstance(v, GlobalVariable):
                             lag_vars.add(v.name)
                     for lv in node.all_of(LinkGet):
-                        #noinspection PyProtectedMember
+                        # noinspection PyProtectedMember
                         lag_vars.add(lv.link._link_field)
-                        #noinspection PyProtectedMember
+                        # noinspection PyProtectedMember
                         target_entity = lv.link._target_entity
                         if target_entity == self:
                             target_vars = lv.target_expr.all_of(Variable)
@@ -443,13 +555,13 @@ class Entity(object):
             lag_vars.discard('id')
             lag_vars = ['id'] + sorted(lag_vars)
 
-        field_type = dict(self.fields)
+        field_type = dict(self.fields.name_types)
         self.lag_fields = [(v, field_type[v]) for v in lag_vars]
 
     def load_period_data(self, period):
         if self.lag_fields:
-            #TODO: use ColumnArray here
-            #XXX: do we need np.empty? (but watch for alias problems)
+            # TODO: use ColumnArray here
+            # XXX: do we need np.empty? (but watch for alias problems)
             self.array_lag = np.empty(len(self.array),
                                       dtype=np.dtype(self.lag_fields))
             for field, _ in self.lag_fields:
@@ -484,11 +596,14 @@ class Entity(object):
         num_locals = len(local_var_names)
         if config.debug and num_locals:
             local_vars = [v for k, v in temp_vars.iteritems()
-                          if k in local_var_names and isinstance(v, np.ndarray)]
+                          if k in local_var_names]
             max_vars = max(max_vars, num_locals)
-            temp_mem = sum(v.nbytes for v in local_vars)
-            avgsize = sum(v.dtype.itemsize for v in local_vars) / num_locals
-            if config.log_level in ("procedures", "processes"):
+            temp_mem = sum(sys.getsizeof(v) +
+                           (v.nbytes if isinstance(v, np.ndarray) else 0)
+                           for v in local_vars)
+            avgsize = sum(v.dtype.itemsize if isinstance(v, np.ndarray) else 0
+                          for v in local_vars) / num_locals
+            if config.log_level in ("functions", "processes"):
                 print(("purging {} variables (max {}), will free {} of memory "
                        "(avg field size: {} b)".format(num_locals, max_vars,
                                                        size2str(temp_mem),
@@ -503,7 +618,7 @@ class Entity(object):
         # also flush it to disk
         h5file = self.output_index_node._v_file
         h5file.create_array(self.output_index_node, "_%d" % period,
-                           self.id_to_rownum, "Period %d index" % period)
+                            self.id_to_rownum, "Period %d index" % period)
 
         # if an old index exists (this is not the case for the first period!),
         # point to the one on the disk, instead of the one in memory,
@@ -515,7 +630,7 @@ class Entity(object):
             self.output_index[period - 1] = DiskBackedArray(prev_disk_array)
 
     def store_period_data(self, period):
-        if config.debug and config.log_level in ("procedures", "processes"):
+        if config.debug and config.log_level in ("functions", "processes"):
             temp_mem = sum(v.nbytes for v in self.temp_variables.itervalues()
                            if isinstance(v, np.ndarray))
             main_mem = self.array.nbytes
