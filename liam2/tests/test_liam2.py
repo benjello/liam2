@@ -11,7 +11,7 @@ from liam2.simulation import Simulation
 from liam2.importer import file2h5
 
 def run_simulation(yaml_file, input_dir, output_dir):
-    # try:
+    try:
         simulation = Simulation.from_yaml(
             yaml_file,
             input_dir = input_dir,
@@ -21,9 +21,11 @@ def run_simulation(yaml_file, input_dir, output_dir):
             yaml_file, input_dir, output_dir
             ))
         simulation.run(run_console=False)
-    # except Exception:
-    #     print('{} failed'.format(yaml_file))
-    #     raise
+
+    except Exception as e:
+        print('{} failed'.format(yaml_file))
+        raise(e)
+
 
 
 def test_liam2(subfolder, excluded_files):

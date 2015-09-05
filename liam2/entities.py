@@ -14,6 +14,7 @@ from data import merge_arrays, get_fields, ColumnArray, index_table
 from expr import (Variable, VariableMethodHybrid, GlobalVariable, GlobalTable,
                   GlobalArray, Expr, MethodSymbol,
                   expr_eval, missing_values)
+
 from exprtools import parse
 from process import Assignment, ProcessGroup, While, Function, Return
 from utils import (count_occurrences, field_str_to_type, size2str,
@@ -223,6 +224,7 @@ class Entity(object):
                 raise Exception("The default value given to %s is %s"
                     " but %s was expected" %(name, type(default), strtype))
             return Field(name, dtype, input, output, default)
+
 
         fields = [fdef2field(name, fdef) for name, fdef in fields_def]
         link_defs = entity_def.get('links', {})
