@@ -61,10 +61,11 @@ def test_liam2_functionnal_files():
 
 
 if __name__ == '__main__':
-    for function, yaml_file, input_dir, output_dir in test_liam2_examples_files():
-        print (yaml_file)
-        function(yaml_file, input_dir, output_dir)
+#    for function, yaml_file, input_dir, output_dir in test_liam2_examples_files():
+#        print (yaml_file)
+#        function(yaml_file, input_dir, output_dir)
 
     for function, yaml_file, input_dir, output_dir in test_liam2_functionnal_files():
         print(yaml_file)
-        function(yaml_file, input_dir, output_dir)
+        if 'import' not in yaml_file:
+            function(yaml_file, input_dir, output_dir)

@@ -27,3 +27,4 @@ doc/website/objects.inv
 doc/website/pages/download.rst
 doc/website/pages/documentation.rst
 /doc/website/conf.py
+*.h5
