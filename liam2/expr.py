@@ -222,22 +222,10 @@ def expr_eval(expr, context):
                          expr_eval(expr.stop, context),
                          expr_eval(expr.step, context))
         else:
-            globals_names = set()
-
-            # FIXME: systematically checking for the presence of variables has a
-            # non-negligible cost (especially in matching), even when caching
-            # collect_variables result (it is much better than before though).
-            # TODO: also check for globals
-            for var in expr.collect_variables():
-                if var.name not in globals_names and var not in context:
-                    raise Exception("variable '%s' is unknown (it is either not "
-                                    "defined or not computed yet)" % var)
-        return expr.evaluate(context)
-   
+            return expr
     except Exception, e:
         add_context(e, "when evaluating: " + str(expr))
         raise
-
 
 
 def binop(opname, kind='binary', reverse=False):
