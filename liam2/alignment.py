@@ -1,3 +1,4 @@
+# encoding: utf-8
 from __future__ import print_function
 
 from itertools import izip
@@ -384,7 +385,6 @@ class AlignmentAbsoluteValues(FilteredExpression):
             need = np.array(need)
         assert isinstance(need, np.ndarray)
 
-
         if expressions is None:
             expressions = []
 
@@ -453,7 +453,6 @@ class AlignmentAbsoluteValues(FilteredExpression):
             self._display_unaligned(expressions, context['id'], columns,
                                     unaligned)
 
-
         periodicity = context.periodicity
 
         if context.format_date == 'year0':
@@ -478,6 +477,7 @@ class AlignmentAbsoluteValues(FilteredExpression):
         need = need * self._get_need_correction(groups, possible_values)
         need = self._handle_frac_need(need, method=frac_need)
         need = self._add_past_error(context, need, method=errors)
+
         return align_get_indices_nd(ctx_length, groups, need, filter_value,
                                     score, take, leave, method)
 

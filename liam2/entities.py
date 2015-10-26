@@ -10,9 +10,10 @@ import numpy as np
 import tables
 
 import config
-from data import merge_arrays, get_fields, ColumnArray, index_table
+from data import (merge_arrays, get_fields, ColumnArray, index_table,
+                  build_period_array)
 from expr import (Variable, VariableMethodHybrid, GlobalVariable, GlobalTable,
-                  GlobalArray, Expr, MethodSymbol,
+                  GlobalArray, Expr, MethodSymbol, normalize_type,
                   expr_eval, get_missing_value, missing_values)
 from exprtools import parse
 from process import Assignment, ProcessGroup, While, Function, Return
@@ -83,6 +84,8 @@ class Field(object):
 class FieldCollection(list):
     def __init__(self, iterable=None):
         list.__init__(self, iterable)
+        for f in self:
+            assert isinstance(f, Field)
 
     @property
     def in_input(self):
@@ -127,7 +130,26 @@ class Entity(object):
             array_period = None
 
         if not isinstance(fields, FieldCollection):
-            fields = FieldCollection(fields)
+            def fdef2field(name, fielddef):
+                initialdata = True
+                output = True
+                if isinstance(fielddef, Field):
+                    return fielddef
+                elif isinstance(fielddef, (dict, str)):
+                    if isinstance(fielddef, dict):
+                        strtype = fielddef['type']
+                        initialdata = fielddef.get('initialdata', True)
+                        output = fielddef.get('output', True)
+                    elif isinstance(fielddef, str):
+                        strtype = fielddef
+                    dtype = field_str_to_type(strtype, "field '%s'" % name)
+                else:
+                    assert isinstance(fielddef, type)
+                    dtype = normalize_type(fielddef)
+                return Field(name, dtype, initialdata, output)
+
+            fields = FieldCollection(fdef2field(name, fdef)
+                                     for name, fdef in fields)
 
         duplicate_names = [name
                            for name, num
@@ -164,9 +186,6 @@ class Entity(object):
         # simulated, because (currently) when we go back in time, we always go
         # back using the output table... but periods before the start_period
         # are only present in input_index
-        # FIXME: the proper way to fix this is to copy the input_index into
-        # the output_index during H5Date.run() and not keep input_index
-        # beyond that point.
         self.input_index = {}
 
         self.output_rows = {}
@@ -205,33 +224,13 @@ class Entity(object):
         #entity_def.get('fields', []) returns None and this breaks
         fields_def = [d.items()[0] for d in entity_def.get('fields', [])]
 
-        def fdef2field(name, fielddef):
-            if isinstance(fielddef, dict):
-                strtype = fielddef['type']
-                input = fielddef.get('initialdata', True)
-                output = fielddef.get('output', True)
-                dtype = field_str_to_type(strtype, "field '%s'" % name)
-                default = fielddef.get('default', None)
-                if (dtype != type(default)) and default is not None: # TODO FIXME BEFORE COMMIT !!!
-                    raise Exception("The default value given to %s is %s"
-                    " but %s was expected" %(name, type(default), strtype) )
-
-            else:
-                strtype = fielddef
-                input = True
-                output = True
-                dtype = field_str_to_type(strtype, "field '%s'" % name)
-                default = None
-            return Field(name, dtype, input, output)
-
-        fields = [fdef2field(name, fdef) for name, fdef in fields_def]
         link_defs = entity_def.get('links', {})
         str2class = {'one2many': One2Many, 'many2one': Many2One, 'one2one': One2One}
         links = dict((name,
                       str2class[l['type']](name, l['field'], l['target']))
                      for name, l in link_defs.iteritems())
 
-        return Entity(ent_name, fields, links,
+        return Entity(ent_name, fields_def, links,
                       entity_def.get('macros', {}),
                       entity_def.get('processes', {}))
 
@@ -558,6 +557,15 @@ Please use this instead:
         field_type = dict(self.fields.name_types)
         self.lag_fields = [(v, field_type[v]) for v in lag_vars]
 
+    def build_period_array(self, start_period):
+        self.array, self.id_to_rownum = \
+            build_period_array(self.input_table,
+                               list(self.fields.name_types),
+                               self.input_rows,
+                               self.input_index, start_period)
+        assert isinstance(self.array, ColumnArray)
+        self.array_period = start_period
+
     def load_period_data(self, period):
         if self.lag_fields:
             # TODO: use ColumnArray here
@@ -566,6 +574,12 @@ Please use this instead:
                                       dtype=np.dtype(self.lag_fields))
             for field, _ in self.lag_fields:
                 self.array_lag[field] = self.array[field]
+
+        # if not self.indexed_input_table.has_period(period):
+        #     # nothing needs to be done in that case
+        #     return
+        #
+        # input_array = self.indexed_input_table.read(period)
 
         rows = self.input_rows.get(period)
         if rows is None:

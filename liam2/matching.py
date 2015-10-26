@@ -241,7 +241,7 @@ class SequentialMatching(Matching):
 
             result[id_to_rownum[ids1]] = ids2
             result[id_to_rownum[ids2]] = ids1
-
+            
             if nb_match == cell2size:
                 matching_ctx = context_delete(matching_ctx, cell2_idx)
             else:

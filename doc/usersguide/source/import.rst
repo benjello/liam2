@@ -178,10 +178,10 @@ file.
 
     entities:
         household:
-            path: input\household.csv
+            path: input/household.csv
 
         person:
-            path: input\person.csv
+            path: input/person.csv
 
 This will try to load all the fields of the household and person entities in 
 "*household.csv*" and "person.csv" in the "input" sub-directory of the
@@ -193,15 +193,15 @@ directory where the description file is.
 
     globals:
         periodic:
-            path: input\globals_transposed.csv
+            path: input/globals_transposed.csv
             transposed: True
 
     entities:
         household:
-            path: input\household.csv
+            path: input/household.csv
     
         person:
-            path: input\person.csv
+            path: input/person.csv
             fields:
                 - age:        int
                 - gender:     bool
@@ -245,7 +245,7 @@ If the fields of an entity are scattered in several files, you can use the
                         value: workstate
                 # person.csv should have at least 4 columns:
                 # period, id, age and gender
-                - param\person.csv:
+                - param/person.csv:
                     newnames:
                         # we override the "global" renaming
                         period: period
