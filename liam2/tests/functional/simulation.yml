@@ -3,6 +3,7 @@ import:
     - imported2.yml
 
 globals:
+    DEBUG: True
     periodic:
         path: param/globals.csv
         transposed: True
@@ -2631,6 +2632,9 @@ entities:
                 - assertEquiv(defaulted_float_variable, 99.99)
                 - assertTrue(all(defaulted_bool_variable))
 
+            test_global_parameter:
+                - assertTrue(DEBUG)
+
 simulation:
     init:
         - household: [init_region]
@@ -2764,6 +2768,7 @@ simulation:
                    show_weight,
 #                   test_array,
                    test_default_value,
+                   test_global_parameter,
         ]
         - household: [composition,
                       test_align_link,

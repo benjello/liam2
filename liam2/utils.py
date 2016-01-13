@@ -1,16 +1,17 @@
 # encoding: utf-8
 from __future__ import print_function
 
-import re
 import ast
-import sys
-import math
-import time
-import operator
+from collections import defaultdict, deque, namedtuple
 import itertools
 from itertools import izip, product
+import math
+import numbers
+import operator
 from textwrap import wrap
-from collections import defaultdict, deque, namedtuple
+import re
+import sys
+import time
 import warnings
 
 import numpy as np
@@ -1076,6 +1077,8 @@ def validate_value(v, target, context):
         validate_dict(v, target, context)
     elif isinstance(target, list):
         validate_list(v, target, context)
+    elif isinstance(target, numbers.Number) or isinstance(target, bool):
+        pass
     else:
         if not isinstance(v, target):
             raise Exception("invalid structure for '%s'" % context)

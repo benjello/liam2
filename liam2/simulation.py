@@ -100,6 +100,7 @@ class Simulation(object):
     yaml_layout = {
         'import': None,
         'globals': {
+            'DEBUG': None,
             'periodic': None,  # either full-blown (dict) description or list
                                # of fields
             '*': {
@@ -222,13 +223,16 @@ class Simulation(object):
         #                'MIG': {'type': int}}
         globals_def = {}
         for k, v in content.get('globals', {}).iteritems():
-            if "type" in v:
-                v["type"] = field_str_to_type(v["type"], "array '%s'" % k)
-            else:
-                # TODO: fields should be optional (would use all the fields
-                # provided in the file)
-                v["fields"] = fields_yaml_to_type(v["fields"])
-            globals_def[k] = v
+            try:
+                if "type" in v:
+                    v["type"] = field_str_to_type(v["type"], "array '%s'" % k)
+                else:
+                    # TODO: fields should be optional (would use all the fields
+                    # provided in the file)
+                    v["fields"] = fields_yaml_to_type(v["fields"])
+                globals_def[k] = v
+            except TypeError:
+                globals_def[k] = v
 
         simulation_def = content['simulation']
         if seed is None:

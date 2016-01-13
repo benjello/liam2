@@ -4,6 +4,7 @@ from __future__ import print_function
 import time
 
 import tables
+import numbers
 import numpy as np
 import config
 
@@ -704,8 +705,13 @@ def load_path_globals(globals_def):
     localdir = config.input_directory
     globals_data = {}
     for name, global_def in globals_def.iteritems():
-        if 'path' not in global_def:
+        try:
+            if 'path' not in global_def:
+                continue
+        except TypeError:
+            globals_data[name] = global_def
             continue
+
         kind, info = load_def(localdir, name, global_def, [])
         if kind == 'table':
             fields, numlines, datastream, csvfile = info
@@ -738,6 +744,9 @@ def index_tables(globals_def, entities, fpath):
                 continue
 
             if name not in globals_node:
+                if isinstance(global_def, numbers.Number) or isinstance(global_def, bool):
+                    globals_data[name] = global_def
+
                 raise Exception("could not find 'globals/%s' in the input "
                                 "data file" % name)
 
@@ -847,8 +856,11 @@ class H5Sink(DataSink):
                 output_globals = output_file.create_group("/", "globals",
                                                           "Globals")
                 for k, g_def in globals_def.iteritems():
-                    if 'path' not in g_def:
-                        anyarray_to_disk(output_globals, k, globals_data[k])
+                    try:
+                        if 'path' not in g_def:
+                            anyarray_to_disk(output_globals, k, globals_data[k])
+                    except TypeError:
+                        continue
 
             entities_tables = input_dataset['entities']
             output_entities = output_file.create_group("/", "entities",
